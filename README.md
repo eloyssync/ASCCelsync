@@ -7,6 +7,7 @@ ASCCelsync is a high-performance Windows desktop utility designed for automated 
 > The project is 100% open source. Check our [VirusTotal Report](https://www.virustotal.com/gui/file/e5f3d2fc8bc419399edf185128b7b1b6b391443ae0a401424a4e6e9243a2b0e9?nocache=1).
 
 ---
+<img width="499" height="568" alt="image" src="https://github.com/user-attachments/assets/58859318-ab46-4d88-84e2-b3689ec4badc" />
 
 ## Key Features
 
