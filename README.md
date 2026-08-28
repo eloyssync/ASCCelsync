@@ -2,6 +2,10 @@
 
 ASCCelsync is a high-performance Windows desktop utility designed for automated discovery, analysis, and safe sanitization of graphics shader caches, runtime system artifacts, and temporary application directories. Built with Python and PyQt6, the application provides a native, low-overhead interface for direct storage optimization without registry bloat or background telemetry.
 
+> **Note on Antivirus Detections:**
+> Standalone Windows executables built with packaging tools may trigger 2-3 false positive detections on some antivirus engines. 
+> The project is 100% open source. Check our [VirusTotal Report](https://www.virustotal.com/gui/file/e5f3d2fc8bc419399edf185128b7b1b6b391443ae0a401424a4e6e9243a2b0e9?nocache=1).
+
 ---
 
 ## Key Features
