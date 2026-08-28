@@ -23,21 +23,28 @@ from PyQt6.QtWidgets import (
     QFrame
 )
 
-def is_admin() -> bool:
 
+# ---------------------------------------------------------------------------
+# System Utilities & Helper Functions
+# ---------------------------------------------------------------------------
+
+def is_admin() -> bool:
+    """Check if the current process has administrative elevation."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except Exception:
         return False
 
-def restart_as_admin() -> None:
 
+def restart_as_admin() -> None:
+    """Relaunch the current script requesting UAC elevation."""
     try:
         executable = sys.executable
         script = os.path.abspath(sys.argv[0])
         params = " ".join([f'"{arg}"' for arg in sys.argv[1:]])
         args = f'"{script}" {params}'.strip()
 
+        # SW_SHOW = 5
         ret = ctypes.windll.shell32.ShellExecuteW(
             None,
             "runas",
@@ -51,10 +58,12 @@ def restart_as_admin() -> None:
     except Exception as ex:
         print(f"Failed to elevate process: {ex}")
 
+
 def get_steam_shader_paths() -> list[Path]:
-
+    """Retrieve Steam shader cache paths via Registry lookup and default locations."""
     paths: list[Path] = []
-
+    
+    # 1. Check HKCU Registry
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
             val, _ = winreg.QueryValueEx(key, "SteamPath")
@@ -64,6 +73,7 @@ def get_steam_shader_paths() -> list[Path]:
     except OSError:
         pass
 
+    # 2. Check 32-bit and 64-bit Program Files standard fallbacks
     for env_var in ["ProgramFiles(x86)", "ProgramFiles"]:
         prog_dir = os.environ.get(env_var)
         if prog_dir:
@@ -73,8 +83,9 @@ def get_steam_shader_paths() -> list[Path]:
 
     return paths
 
-def format_size(bytes_count: int) -> str:
 
+def format_size(bytes_count: int) -> str:
+    """Format raw byte counts into clean human-readable representation."""
     if bytes_count <= 0:
         return "0 B"
     units = ["B", "KB", "MB", "GB", "TB"]
@@ -85,8 +96,9 @@ def format_size(bytes_count: int) -> str:
         i += 1
     return f"{size:.2f} {units[i]}"
 
-def get_directory_size(path: Path) -> int:
 
+def get_directory_size(path: Path) -> int:
+    """Non-throwing directory size scanner."""
     total = 0
     if not path.exists():
         return 0
@@ -105,11 +117,16 @@ def get_directory_size(path: Path) -> int:
         pass
     return total
 
-class SizeScannerWorker(QThread):
 
-    size_calculated = pyqtSignal(str, int)
+# ---------------------------------------------------------------------------
+# Background Workers (QThread Engine)
+# ---------------------------------------------------------------------------
+
+class SizeScannerWorker(QThread):
+    """Background scanner calculating directory sizes without blocking the UI thread."""
+    size_calculated = pyqtSignal(str, int)  # target_key, size_in_bytes
     scan_started = pyqtSignal(str)
-    scan_finished = pyqtSignal(int)
+    scan_finished = pyqtSignal(int)         # total_bytes_found
 
     def __init__(self, target_dict: dict[str, list[Path]]):
         super().__init__()
@@ -125,14 +142,15 @@ class SizeScannerWorker(QThread):
                     category_total += get_directory_size(p)
             self.size_calculated.emit(key, category_total)
             grand_total += category_total
-
+            
         self.scan_finished.emit(grand_total)
 
-class SafeCleanerWorker(QThread):
 
+class SafeCleanerWorker(QThread):
+    """Background deletion worker. Safely removes locked files and tracks skipped items."""
     progress_changed = pyqtSignal(int)
     log_message = pyqtSignal(str)
-    clean_completed = pyqtSignal(int, int, int)
+    clean_completed = pyqtSignal(int, int, int)  # bytes_freed, files_deleted, files_skipped
 
     def __init__(self, targets_to_clean: list[Path]):
         super().__init__()
@@ -140,13 +158,13 @@ class SafeCleanerWorker(QThread):
 
     def run(self) -> None:
         self.log_message.emit("Indexing deletable cache files...")
-
+        
         items_to_delete: list[Path] = []
         for base_path in self.targets_to_clean:
             if not base_path.exists():
                 continue
             try:
-
+                # Walk bottom-up to delete contents before directories
                 for root, dirs, files in os.walk(base_path, topdown=False):
                     for file_name in files:
                         items_to_delete.append(Path(root) / file_name)
@@ -163,7 +181,7 @@ class SafeCleanerWorker(QThread):
             return
 
         self.log_message.emit(f"Deletion started across {total_items} items...")
-
+        
         bytes_freed = 0
         files_deleted = 0
         files_skipped = 0
@@ -176,19 +194,25 @@ class SafeCleanerWorker(QThread):
                     bytes_freed += file_size
                     files_deleted += 1
                 elif item.is_dir():
-
+                    # Attempt to remove directory if empty; ignore if files remain
                     item.rmdir()
             except (PermissionError, OSError):
-
+                # File is actively locked by a driver, game, or process
                 files_skipped += 1
                 continue
 
+            # Update progress bar smoothly without flooding event loop
             if idx % 15 == 0 or idx == total_items - 1:
                 progress = int(((idx + 1) / total_items) * 100)
                 self.progress_changed.emit(progress)
 
         self.progress_changed.emit(100)
         self.clean_completed.emit(bytes_freed, files_deleted, files_skipped)
+
+
+# ---------------------------------------------------------------------------
+# Main GUI Window
+# ---------------------------------------------------------------------------
 
 class CacheCleanerWindow(QWidget):
     def __init__(self):
@@ -197,18 +221,23 @@ class CacheCleanerWindow(QWidget):
         self.setFixedWidth(500)
         self.setFixedHeight(540)
 
+        # Structure target paths
         self.targets = self._define_targets()
         self.cached_sizes: dict[str, int] = {k: 0 for k in self.targets.keys()}
 
+        # Active worker references
         self.scanner_thread: SizeScannerWorker | None = None
         self.cleaner_thread: SafeCleanerWorker | None = None
 
+        # Build UI
         self._init_ui()
 
+        # Output initial status
         self._log("Application initialized.")
         if not is_admin():
             self._log("Warning: Running with non-elevated user permissions.")
 
+        # Auto-scan all paths on startup
         self._scan_all_targets()
 
     def _define_targets(self) -> dict[str, dict]:
@@ -248,14 +277,15 @@ class CacheCleanerWindow(QWidget):
         main_layout.setContentsMargins(10, 8, 10, 8)
         main_layout.setSpacing(6)
 
+        # 0. Admin Privilege Banner (Hidden if elevated)
         self.admin_banner = QFrame()
         self.admin_banner.setFrameShape(QFrame.Shape.Panel)
         self.admin_banner.setFrameShadow(QFrame.Shadow.Sunken)
         self.admin_banner.setStyleSheet("background-color: #FFF9E6; border: 1px solid #E6B800;")
-
+        
         banner_layout = QHBoxLayout(self.admin_banner)
         banner_layout.setContentsMargins(8, 4, 8, 4)
-
+        
         self.admin_msg = QLabel("Admin privileges recommended for locked shader caches.")
         self.admin_msg.setStyleSheet("color: #8A6D3B; font-weight: bold; border: none;")
         banner_layout.addWidget(self.admin_msg)
@@ -270,21 +300,24 @@ class CacheCleanerWindow(QWidget):
         if is_admin():
             self.admin_banner.setVisible(False)
 
+        # 1. Configuration & Directories GroupBox
         group_dirs = QGroupBox("Directories to Clean")
         grid = QGridLayout(group_dirs)
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(4)
         grid.setContentsMargins(8, 8, 8, 8)
 
+        # Column configuration & headers
         self.chk_boxes: dict[str, QCheckBox] = {}
         self.size_labels: dict[str, QLabel] = {}
         self.scan_buttons: dict[str, QPushButton] = {}
 
         for row, (key, meta) in enumerate(self.targets.items()):
-
+            # Col 0: Name Label
             name_lbl = QLabel(meta["name"])
             grid.addWidget(name_lbl, row, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
+            # Col 1: Formatted Size Label
             size_lbl = QLabel("0 B")
             size_lbl.setFixedWidth(75)
             size_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -292,12 +325,14 @@ class CacheCleanerWindow(QWidget):
             grid.addWidget(size_lbl, row, 1)
             self.size_labels[key] = size_lbl
 
+            # Col 2: CheckBox (Clean)
             chk = QCheckBox("Clean")
             chk.setChecked(True)
             chk.stateChanged.connect(self._update_start_button_state)
             grid.addWidget(chk, row, 2, Qt.AlignmentFlag.AlignCenter)
             self.chk_boxes[key] = chk
 
+            # Col 3: Scan Button
             btn_scan = QPushButton("↻")
             btn_scan.setToolTip("Scan this path")
             btn_scan.setFixedWidth(36)
@@ -306,6 +341,7 @@ class CacheCleanerWindow(QWidget):
             grid.addWidget(btn_scan, row, 3, Qt.AlignmentFlag.AlignCenter)
             self.scan_buttons[key] = btn_scan
 
+        # Horizontal action row inside Group Box (Scan All button)
         self.btn_scan_all = QPushButton("Scan All Directories")
         self.btn_scan_all.setFixedHeight(24)
         self.btn_scan_all.clicked.connect(self._scan_all_targets)
@@ -313,6 +349,7 @@ class CacheCleanerWindow(QWidget):
 
         main_layout.addWidget(group_dirs)
 
+        # 2. System Status & Log GroupBox
         group_status = QGroupBox("System Status")
         status_layout = QVBoxLayout(group_status)
         status_layout.setContentsMargins(8, 6, 8, 6)
@@ -333,6 +370,7 @@ class CacheCleanerWindow(QWidget):
 
         main_layout.addWidget(group_status)
 
+        # 3. Bottom Large Start Action Button
         self.btn_start = QPushButton("START CLEANING")
         self.btn_start.setFixedHeight(38)
         btn_font = self.btn_start.font()
@@ -340,6 +378,10 @@ class CacheCleanerWindow(QWidget):
         self.btn_start.setFont(btn_font)
         self.btn_start.clicked.connect(self._start_cleaning_process)
         main_layout.addWidget(self.btn_start)
+
+    # -----------------------------------------------------------------------
+    # Logging & UI Helpers
+    # -----------------------------------------------------------------------
 
     def _log(self, text: str) -> None:
         timestamp = datetime.now().strftime("[%H:%M:%S]")
@@ -359,6 +401,10 @@ class CacheCleanerWindow(QWidget):
     def _update_start_button_state(self) -> None:
         self.btn_start.setEnabled(self._has_selected_targets())
 
+    # -----------------------------------------------------------------------
+    # Scanning Controller Logic
+    # -----------------------------------------------------------------------
+
     def _scan_single_target(self, key: str) -> None:
         self._set_ui_busy(True)
         paths = self.targets[key]["paths"]
@@ -376,7 +422,7 @@ class CacheCleanerWindow(QWidget):
     def _scan_all_targets(self) -> None:
         self._set_ui_busy(True)
         scan_dict = {key: meta["paths"] for key, meta in self.targets.items()}
-
+        
         self.scanner_thread = SizeScannerWorker(scan_dict)
         self.scanner_thread.size_calculated.connect(self._on_all_item_scanned)
         self.scanner_thread.scan_finished.connect(self._on_all_scan_finished)
@@ -390,8 +436,12 @@ class CacheCleanerWindow(QWidget):
         self._set_ui_busy(False)
         self._log(f"Total scan complete: {format_size(grand_total)} cache detected.")
 
-    def _start_cleaning_process(self) -> None:
+    # -----------------------------------------------------------------------
+    # Cleaning Controller Logic
+    # -----------------------------------------------------------------------
 
+    def _start_cleaning_process(self) -> None:
+        # 1. Ask for confirmation
         confirm = QMessageBox.warning(
             self,
             "Confirm Cleanup",
@@ -404,11 +454,13 @@ class CacheCleanerWindow(QWidget):
             self._log("Cleanup cancelled by user.")
             return
 
+        # 2. Gather selected paths
         selected_paths: list[Path] = []
         for key, chk in self.chk_boxes.items():
             if chk.isChecked():
                 selected_paths.extend(self.targets[key]["paths"])
 
+        # 3. Start background deletion
         self._set_ui_busy(True)
         self.progress_bar.setValue(0)
 
@@ -424,12 +476,18 @@ class CacheCleanerWindow(QWidget):
             f"({deleted} deleted, {skipped} locked/skipped)."
         )
         self._set_ui_busy(False)
-
+        # Rescan to reflect updated sizes
         self._scan_all_targets()
+
+
+# ---------------------------------------------------------------------------
+# Application Entry Point
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
+    
+    # Enforce pure Windows native style
     app.setStyle("windowsvista")
 
     window = CacheCleanerWindow()
