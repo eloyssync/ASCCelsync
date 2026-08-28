@@ -35,6 +35,8 @@ ASCCelsync is a high-performance Windows desktop utility designed for automated 
 
 ## Installation & Requirements
 
+[Download ASCCelsync v2.0.0](https://github.com/eloyssync/ASCCelsync/releases/tag/v1.0.0)
+
 ### Prerequisites
 
 - Windows 10 / Windows 11 (x64)
